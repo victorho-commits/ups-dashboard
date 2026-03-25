@@ -1,36 +1,139 @@
 import streamlit as st
 import pandas as pd
-import os
-from datetime import datetime
 import time
+import re
 
-FILE_PATH = r"C:\Users\31001277\OneDrive - Genscript USA Inc\Desktop\UPS Arrival Notice Folder\UPS Arrival Notice - YTD.xlsx"
+# -------------------------------
+# CONFIG
+# -------------------------------
+st.set_page_config(
+    page_title="UPS Live Dashboard",
+    layout="wide"
+)
 
-st.set_page_config(page_title="UPS Dashboard", layout="wide")
+FILE_PATH = "UPS Arrival Notice - YTD.xlsx"
 
-@st.cache_data(ttl=5)
+# -------------------------------
+# AUTO REFRESH (every 30 seconds)
+# -------------------------------
+REFRESH_INTERVAL = 30
+st.markdown(f"⏱ Auto-refresh every {REFRESH_INTERVAL} seconds")
+time.sleep(1)
+
+# -------------------------------
+# LOAD DATA
+# -------------------------------
+@st.cache_data
 def load_data():
-    if os.path.exists(FILE_PATH):
-        return pd.read_excel(FILE_PATH)
-    return pd.DataFrame()
-
-st.title("📦 UPS Live Dashboard")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.success("🟢 Automation Running")
-
-with col2:
-    st.info(f"Last Update: {datetime.now().strftime('%H:%M:%S')}")
+    try:
+        df = pd.read_excel(FILE_PATH)
+        return df
+    except Exception as e:
+        st.error(f"Error loading file: {e}")
+        return pd.DataFrame()
 
 df = load_data()
 
-if not df.empty:
-    st.metric("Total Shipments", len(df))
-    st.dataframe(df.sort_values(by="DateTimeReceived", ascending=False), use_container_width=True)
-else:
-    st.warning("Waiting for data...")
+if df.empty:
+    st.warning("No data found.")
+    st.stop()
 
-time.sleep(5)
+# -------------------------------
+# CLEAN DATA
+# -------------------------------
+
+# Clean Shipment ID (remove PackageID / Shipment)
+def clean_shipment(val):
+    if pd.isna(val):
+        return val
+    return re.sub(r"(PackageID|Shipment)", "", str(val), flags=re.IGNORECASE)
+
+if "Shipment ID" in df.columns:
+    df["Shipment ID"] = df["Shipment ID"].apply(clean_shipment)
+
+# Convert datetime safely
+if "DateTimeReceived" in df.columns:
+    df["DateTimeReceived"] = pd.to_datetime(
+        df["DateTimeReceived"], errors="coerce"
+    )
+
+# -------------------------------
+# HEADER
+# -------------------------------
+st.title("📦 UPS Shipment Dashboard")
+st.caption("Real-time tracking from Outlook → Excel → Dashboard")
+
+# -------------------------------
+# METRICS
+# -------------------------------
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("Total Shipments", len(df))
+
+with col2:
+    if "Tracking Number" in df.columns:
+        st.metric("Unique Tracking #", df["Tracking Number"].nunique())
+    else:
+        st.metric("Unique Tracking #", "N/A")
+
+with col3:
+    if "DateTimeReceived" in df.columns:
+        latest = df["DateTimeReceived"].max()
+        st.metric("Last Update", str(latest))
+    else:
+        st.metric("Last Update", "N/A")
+
+# -------------------------------
+# FILTERS
+# -------------------------------
+st.sidebar.header("🔍 Filters")
+
+# Date filter
+if "DateTimeReceived" in df.columns:
+    min_date = df["DateTimeReceived"].min()
+    max_date = df["DateTimeReceived"].max()
+
+    date_range = st.sidebar.date_input(
+        "Filter by Date",
+        [min_date, max_date]
+    )
+
+    if len(date_range) == 2:
+        df = df[
+            (df["DateTimeReceived"] >= pd.to_datetime(date_range[0])) &
+            (df["DateTimeReceived"] <= pd.to_datetime(date_range[1]))
+        ]
+
+# Search filter
+search = st.sidebar.text_input("Search Tracking / Shipment ID")
+
+if search:
+    df = df[
+        df.astype(str).apply(
+            lambda row: row.str.contains(search, case=False).any(),
+            axis=1
+        )
+    ]
+
+# -------------------------------
+# DATA TABLE
+# -------------------------------
+st.subheader("📋 Shipment Data")
+st.dataframe(df, use_container_width=True)
+
+# -------------------------------
+# DOWNLOAD BUTTON
+# -------------------------------
+st.download_button(
+    label="📥 Download Data",
+    data=df.to_csv(index=False),
+    file_name="UPS_Shipments.csv",
+    mime="text/csv"
+)
+
+# -------------------------------
+# AUTO REFRESH LOOP
+# -------------------------------
+time.sleep(REFRESH_INTERVAL)
 st.rerun()
